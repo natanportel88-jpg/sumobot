@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Control SumoBot</title>
+<style>
+  :root { --bg:#111; --card:#1c1c1e; --acc:#ff9f0a; --ok:#30d158; --bad:#ff453a; --txt:#f2f2f7; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; touch-action:manipulation; }
+  body { margin:0; background:var(--bg); color:var(--txt); font-family:system-ui,sans-serif;
+         display:flex; flex-direction:column; align-items:center; gap:14px; padding:14px; min-height:100vh; }
+  h1 { margin:4px 0 0; font-size:20px; }
+  #estado { font-size:14px; color:#999; }
+  #estado.on { color:var(--ok); }
+  button { font:inherit; color:var(--txt); border:0; border-radius:16px; background:var(--card); }
+  #conectar { background:var(--acc); color:#000; font-weight:700; padding:14px 28px; font-size:17px; }
+  .pad { display:grid; grid-template-columns:repeat(3,92px); grid-template-rows:repeat(3,92px); gap:10px; margin-top:6px; }
+  .pad button { font-size:34px; }
+  .pad button.activo { background:var(--acc); color:#000; }
+  .pad .stop { background:var(--bad); font-size:18px; font-weight:700; }
+  .fila { display:flex; gap:10px; width:100%; max-width:330px; }
+  .fila button { flex:1; padding:16px 8px; font-size:16px; font-weight:600; }
+  #auto { background:#0a84ff; }
+  #manual { background:#444; }
+  .slider { width:100%; max-width:330px; background:var(--card); border-radius:16px; padding:12px 16px; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  #log { width:100%; max-width:330px; font:12px monospace; color:#888; min-height:18px; text-align:center; }
+</style>
+</head>
+<body>
+  <h1>🤖 SumoBot</h1>
+  <div id="estado">Desconectado</div>
+  <button id="conectar">Conectar por Bluetooth</button>
+
+  <div class="pad" id="pad">
+    <button data-c="G">↖</button><button data-c="F">▲</button><button data-c="I">↗</button>
+    <button data-c="L">◀</button><button class="stop" data-c="S">STOP</button><button data-c="R">▶</button>
+    <button data-c="H">↙</button><button data-c="B">▼</button><button data-c="J">↘</button>
+  </div>
+
+  <div class="slider">
+    Velocidad: <b id="vel">80</b>%
+    <input id="velocidad" type="range" min="20" max="100" value="80">
+  </div>
+
+  <div class="fila">
+    <button id="auto">⚔️ AUTO (5s)</button>
+    <button id="manual">✋ MANUAL</button>
+  </div>
+  <div id="log"></div>
+
+<script>
+const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';  // escribir al robot
+const TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';  // notificaciones del robot
+
+let device, rxChar, enviando = false, dirActual = null, timer = null;
+const $ = id => document.getElementById(id);
+const log = t => $('log').textContent = t;
+
+async function enviar(txt) {
+  if (!rxChar || enviando) return;
+  enviando = true;
+  try { await rxChar.writeValueWithoutResponse(new TextEncoder().encode(txt + '\n')); }
+  catch (e) { log('Error: ' + e.message); }
+  enviando = false;
+}
+
+async function conectar() {
+  if (!navigator.bluetooth) {
+    log('Este navegador no soporta Web Bluetooth. Usá Chrome en Android.');
+    return;
+  }
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE] }, { namePrefix: 'SumoBot' }],
+      optionalServices: [SERVICE]
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      rxChar = null; $('estado').textContent = 'Desconectado'; $('estado').classList.remove('on');
+      $('conectar').style.display = '';
+    });
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    rxChar = await svc.getCharacteristic(RX);
+    const tx = await svc.getCharacteristic(TX);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged', e =>
+      log('Robot: ' + new TextDecoder().decode(e.target.value).trim()));
+    $('estado').textContent = 'Conectado a ' + device.name;
+    $('estado').classList.add('on');
+    $('conectar').style.display = 'none';
+    enviar('V' + $('velocidad').value);
+  } catch (e) { log(e.message); }
+}
+
+// Mientras se mantiene apretado, se repite el comando cada 100 ms
+// (el robot frena solo si deja de recibirlo).
+function empezar(c, btn) {
+  parar(false);
+  dirActual = c;
+  btn.classList.add('activo');
+  enviar(c);
+  if (c !== 'S') timer = setInterval(() => enviar(c), 100);
+}
+function parar(mandarStop = true) {
+  clearInterval(timer); timer = null;
+  document.querySelectorAll('.pad button').forEach(b => b.classList.remove('activo'));
+  if (mandarStop && dirActual && dirActual !== 'S') enviar('S');
+  dirActual = null;
+}
+
+document.querySelectorAll('.pad button').forEach(b => {
+  b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture(e.pointerId); empezar(b.dataset.c, b); });
+  b.addEventListener('pointerup', () => parar());
+  b.addEventListener('pointercancel', () => parar());
+  b.addEventListener('contextmenu', e => e.preventDefault());
+});
+
+$('conectar').onclick = conectar;
+$('auto').onclick = () => { parar(false); enviar('A'); log('Modo autonomo: arranca en 5 s'); };
+$('manual').onclick = () => { parar(false); enviar('M'); };
+$('velocidad').oninput = e => { $('vel').textContent = e.target.value; enviar('V' + e.target.value); };
+
+// Teclado (para probar desde la compu): flechas / WASD, espacio = stop
+const teclas = { ArrowUp:'F', w:'F', ArrowDown:'B', s:'B', ArrowLeft:'L', a:'L', ArrowRight:'R', d:'R' };
+addEventListener('keydown', e => { if (e.repeat) return;
+  if (e.key === ' ') return empezar('S', document.querySelector('[data-c=S]'));
+  const c = teclas[e.key]; if (c) empezar(c, document.querySelector(`[data-c=${c}]`)); });
+addEventListener('keyup', e => { if (teclas[e.key] || e.key === ' ') parar(); });
+</script>
+</body>
+</html>
